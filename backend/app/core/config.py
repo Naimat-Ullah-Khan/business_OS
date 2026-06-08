@@ -10,6 +10,9 @@ class Settings(BaseSettings):
     DB_PORT: int
     DB_NAME: str
 
+    REDIS_HOST: str = "redis"
+    REDIS_PORT: int = 6379
+
     SECRET_KEY: str = "super secret key"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
