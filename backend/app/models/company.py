@@ -10,3 +10,7 @@ class Company(Base):
 
     plan_id = Column(Integer, ForeignKey('plans.id'))
     plan = relationship("Plan")
+
+    stripe_customer_id = Column(String, nullable=True)
+    stripe_subscription_id = Column(String, nullable=True )
+    subscription_status = Column(String, nullable=True, default="free")
