@@ -1,12 +1,11 @@
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-
 from app.core.database import SessionLocal
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request, status
 from jose import jwt, JWTError
 from sqlalchemy.orm import Session
-
 from app.core.config import settings
 from app.models.user import User
+from app.core.redis import redis_client
 
 security = HTTPBearer()
 
@@ -51,3 +50,32 @@ def require_plan(requirement_plans: list[str]):
             raise HTTPException(status_code=400, detail="Upgrad Your Plan")
         return current_user
     return plan_checker
+
+def _check_rate_limit(key: str, limit: int, window: int):
+    count = redis_client.incr(key)
+    if count == 1:
+        # First request in this window — set the expiry
+        redis_client.expire(key, window)
+    if count > limit:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Rate limit exceeded. Try again later.",
+            headers={"Retry-After": str(window)},
+        )
+
+
+def rate_limit_by_ip(limit: int, window: int):
+    """Rate limit by client IP — for unauthenticated endpoints."""
+    def limiter(request: Request):
+        ip = request.client.host
+        key = f"ratelimit:ip:{ip}:{request.url.path}"
+        _check_rate_limit(key, limit, window)
+    return limiter
+
+
+def rate_limit_by_user(limit: int, window: int):
+    """Rate limit by authenticated user ID — for protected endpoints."""
+    def limiter(request: Request, current_user: User = Depends(get_current_user)):
+        key = f"ratelimit:user:{current_user.id}:{request.url.path}"
+        _check_rate_limit(key, limit, window)
+    return limiter

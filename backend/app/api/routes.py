@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from app.api.deps import get_db, get_current_user, require_role
+from app.api.deps import get_db, get_current_user, require_role, rate_limit_by_ip
 from app.schemas.user import UserCreate, UserResponse, UserLogin, Token, UserInvite
 from app.schemas.company import CompanyCreate, CompanyResponse
 from app.schemas.expense import ExpenseCreate, ExpenseResponse
@@ -12,7 +12,7 @@ from app.models.user import User
 router = APIRouter()
 
 
-@router.post("/register", response_model=UserResponse)
+@router.post("/register", response_model=UserResponse, dependencies=[Depends(rate_limit_by_ip(limit=5, window=60))])
 def register(user: UserCreate, db: Session = Depends(get_db)):
     try:
         return create_user(db, user)
@@ -20,7 +20,7 @@ def register(user: UserCreate, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/login", response_model=Token)
+@router.post("/login", response_model=Token, dependencies=[Depends(rate_limit_by_ip(limit=5, window=60))])
 def login(user: UserLogin, db: Session = Depends(get_db)):
     try:
         return login_user(db, user.email, user.password)

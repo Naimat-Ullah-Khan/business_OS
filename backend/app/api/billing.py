@@ -1,11 +1,13 @@
-from anyio import current_effective_deadline
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
-from app.api.deps import get_db, get_current_user
+from app.api.deps import get_db, get_current_user, rate_limit_by_user
 from app.models.user import User
 from app.models.company import Company
 from app.services import billing_service
+import json
+from app.core.redis import redis_client
+SUBSCRIPTION_CACHE_TTL = 60  # 60 seconds — short because it changes via webhooks
 
 router = APIRouter(prefix="/billing", tags=["Billing"])
 
@@ -15,7 +17,7 @@ class CheckoutRequest(BaseModel):
     success_url: str = "http://localhost:3000/billing/success"
     cancel_url: str = "http://localhost:3000/billing/cancel"
 
-@router.post("/create-checkout-session")
+@router.post("/create-checkout-session", dependencies=[Depends(rate_limit_by_user(limit=10, window=60))])
 def create_checkout_session(
     data: CheckoutRequest,
     db: Session = Depends(get_db),
@@ -37,9 +39,16 @@ def get_subscription_status(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    company = db.query(Company).filter(Company.id == current_user.company.id).first()
-    return {
+    cache_key = f"subscription:company:{current_user.company_id}"
+    cached = redis_client.get(cache_key)
+    if cached:
+        return json.loads(cached)
+
+    company = db.query(Company).filter(Company.id == current_user.company_id).first()
+    data = {
         "plan": company.plan.name if company.plan else "free",
         "subscription_status": company.subscription_status,
         "stripe_subscription_id": company.stripe_subscription_id,
     }
+    redis_client.setex(cache_key, SUBSCRIPTION_CACHE_TTL, json.dumps(data))
+    return data
