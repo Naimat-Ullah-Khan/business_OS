@@ -4,8 +4,35 @@ from app.core.config import settings
 from app.models.company import Company
 from app.models.plan import Plan
 from app.models.webhook_event import WebhookEvent
+import json
+from app.core.redis import redis_client
+
+PLAN_CACHE_TTL = 3600  # 1 hour
 
 stripe.api_key = settings.STRIPE_SECRET_KEY
+
+def invalidate_subscription_cache(company_id: int):
+    redis_client.delete(f"subscription:company:{company_id}")
+
+def get_plan_by_name(db: Session, name: str) -> Plan | None:
+    """Cache-aside lookup for a plan by name."""
+    cache_key = f"plan:name:{name}"
+    cached = redis_client.get(cache_key)
+    if cached:
+        data = json.loads(cached)
+        return Plan(id=data["id"], name=data["name"], stripe_price_id=data["stripe_price_id"])
+    plan = db.query(Plan).filter(Plan.name == name).first()
+    if plan:
+        redis_client.setex(
+            cache_key,
+            PLAN_CACHE_TTL,
+            json.dumps({
+                "id": plan.id,
+                "name": plan.name,
+                "stripe_price_id": plan.stripe_price_id,
+            }),
+        )
+    return plan
 
 def get_or_create_stripe_customer(db: Session, company: Company) ->str:
     if company.stripe_customer_id:
@@ -20,7 +47,7 @@ def get_or_create_stripe_customer(db: Session, company: Company) ->str:
 
 
 def create_checkout_session(db: Session, company: Company, plan_name: str, success_url: str, cancel_url: str) -> str:
-    plan = db.query(Plan).filter(Plan.name == plan_name).first()
+    plan = get_plan_by_name(db, plan_name)
     if not plan or not plan.stripe_price_id:
         raise ValueError(f"{plan_name} not found or has no Stripe Price")
 
@@ -75,17 +102,19 @@ def _handle_checkout_completed(db: Session, session):
         company.stripe_subscription_id = subscription_id
         company.subscription_status = "active"
         db.commit()
+        invalidate_subscription_cache(company.id)
 
 def _handle_subscription_deleted(db: Session, subscription):
     company = db.query(Company).filter(
         Company.stripe_subscription_id == subscription["id"]
     ).first()
     if company:
-        free_plan = db.query(Plan).filter(Plan.name == "free").first()
+        free_plan = get_plan_by_name(db, "free")
         company.plan_id = free_plan.id
         company.stripe_subscription_id = None
         company.subscription_status = "free"
         db.commit()
+        invalidate_subscription_cache(company.id)
 
 def _handle_payment_failed(db: Session, invoice):
     company = db.query(Company).filter(
@@ -94,3 +123,4 @@ def _handle_payment_failed(db: Session, invoice):
     if company:
         company.subscription_status = "past_due"
         db.commit()
+        invalidate_subscription_cache(company.id)
